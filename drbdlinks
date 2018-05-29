@@ -6,10 +6,12 @@
 #  Copyright (c) 2004-2013, tummy.com, ltd.  All Rights Reserved
 #  drbdlinks is under the following license: GPLv2
 import argparse
+import contextlib
 import glob
 import os
 import shutil
 import stat
+import subprocess
 import sys
 import syslog
 
@@ -69,10 +71,9 @@ def multiInitRestart(flavor, initscript_list):
     for initscript in initscript_list:
         if os.path.exists(initscript):
             if initscript.endswith(".service"):
-                retcode = os.system(
-                    'systemctl restart %s' % initscript.rsplit('/', 1)[1])
+                retcode = subprocess.call(['systemctl', 'restart', initscript.rsplit('/', 1)[1]])
             else:
-                retcode = os.system('%s restart' % initscript)
+                retcode = subprocess.call([initscript, 'restart'])
             if retcode != 0:
                 log('%s restart returned %d, expected 0' % (flavor, retcode))
             return retcode != 0
@@ -145,7 +146,7 @@ def loadConfigFile(configFile):
 
             #  auto-detect if SELinux is on
             if self.selinuxenabledPath:
-                ret = os.system(self.selinuxenabledPath)
+                ret = subprocess.call([self.selinuxenabledPath])
                 if ret == 0:
                     self.useSELinux = 1
 
@@ -403,7 +404,7 @@ if mode == 'start':
 
     #  set up shared mountpoint
     if config.makeMountpointShared:
-        os.system('mount --make-shared  "%s"' % config.mountpoint)
+        subprocess.call(['mount', '--make-shared', config.mountpoint])
 
     #  loop over links
     for linkLocal, linkDest, useBindMount in config.linkList:
@@ -436,7 +437,7 @@ if mode == 'start':
                 open(linkLocal, 'w').close()
             else:
                 os.mkdir(linkLocal)
-            os.system('mount -o bind "%s" "%s"' % (linkDest, linkLocal))
+            subprocess.call(['mount', '-o', 'bind', linkDest, linkLocal])
         else:
             try:
                 os.symlink(linkDest, linkLocal)
@@ -448,22 +449,18 @@ if mode == 'start':
 
         #  set up in SELinux
         if config.useSELinux:
-            fp = os.popen('ls -d --scontext "%s"' % suffixName, 'r')
-            line = fp.readline()
-            fp.close()
+            p = subprocess.Popen(['ls', '-d', '--scontext', suffixName], stdout=subprocess.PIPE, close_fds=True)
+            with contextlib.closing(p.stdout) as fp:
+                line = fp.readline()
             if line:
                 line = line.split(' ')[0]
                 seInfo = line.split(':')
                 seUser, seRole, seType = seInfo[:3]
                 if len(seInfo) >= 4:
                     seRange = seInfo[3]
-                    os.system(
-                        'chcon -h -u "%s" -r "%s" -t "%s" -l "%s" "%s"'
-                        % (seUser, seRole, seType, seRange, linkLocal))
+                    subprocess.call(['chco', '-h', '-u', seUser, '-r', seRole, '-t', seType, '-l', seRange, linkLocal])
                 else:
-                    os.system(
-                        'chcon -h -u "%s" -r "%s" -t "%s" "%s"'
-                        % (seUser, seRole, seType, linkLocal))
+                    subprocess.call(['chco', '-h', '-u', seUser, '-r', seRole, '-t', seType, linkLocal])
 
     if anyLinksChanged:
         if restartSyslog(config):
@@ -510,7 +507,7 @@ elif mode == 'stop':
             anyLinksChanged = 1
 
             if useBindMount:
-                os.system('umount "%s"' % linkLocal)
+                subprocess.call(['umount', linkLocal])
                 try:
                     os.remove(linkLocal)
                 except:
@@ -580,12 +577,12 @@ elif mode == 'checklinks':
 #  initialize_shared_storage mode  {{{1
 elif mode == 'initialize_shared_storage':
     def dirs_to_make(src, dest):
-        '''Return a list of paths, from top to bottom, that need to be created
+        """Return a list of paths, from top to bottom, that need to be created
         in the destination.  The return value is a list of tuples of
         (src, dest) where the `src` is the corresponding source directory to
         the `dest`.
-        '''
-        l = []
+        """
+        dirs = []
         destdirname = os.path.dirname(dest)
         srcdirname = os.path.dirname(src)
         while srcdirname and srcdirname != '/':
@@ -593,10 +590,10 @@ elif mode == 'initialize_shared_storage':
                 break
             if os.path.basename(destdirname) != os.path.basename(srcdirname):
                 break
-            l.append((srcdirname, destdirname))
+            dirs.append((srcdirname, destdirname))
             srcdirname = os.path.dirname(srcdirname)
             destdirname = os.path.dirname(destdirname)
-        return l[::-1]
+        return dirs[::-1]
 
 
     relative_symlinks = []
@@ -612,16 +609,14 @@ elif mode == 'initialize_shared_storage':
             os.chown(dest, srcstat.st_uid, srcstat.st_gid)
 
         print('Copying "%s" to "%s"' % (linkLocal, linkDest))
-        os.system('cp -ar "%s" "%s"' % (linkLocal, linkDest))
+        subprocess.check_call(['cp', '-ar', linkLocal, linkDest])
 
-        fp = os.popen('find "%s" -type l -lname "[^/].*" -print0' % linkLocal)
-        relative_symlinks += [l for l in fp.read().split('\0') if l]
+        fp = subprocess.check_output(['find', linkLocal, '-type', 'l', '-lname', '[^/].*', '-print0'])
+        relative_symlinks += [l.decode('utf-8') for l in fp.split(b'\0') if l]
         fp.close()
 
     if relative_symlinks:
-        print(
-            '\nWARNING: The following copied files contain relative '
-            'symlinks:\n')
+        print('\nWARNING: The following copied files contain relative symlinks:\n')
         for symlink in relative_symlinks:
             print('   %s -> %s' % (symlink, os.readlink(symlink)))
 
