@@ -1,4 +1,9 @@
 ================================
+Version 2.0 -- Thu May 29, 2018
+
+Switch to python 3 (python 3.5 required).
+
+================================
 Version 1.28 -- Thu Oct 26, 2017
 
 Added documentation for OCF resource.
